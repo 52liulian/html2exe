@@ -60,6 +60,18 @@ async function main() {
   const htmlExe = await exeOf({ ...base, source: "html", html: "<body><h1>无标题页</h1></body>" });
   ok("html 模式注入 <title>", htmlExe.includes(Buffer.from("<title>测试应用</title>")));
 
+  // htmlData：文件字节直通（大文件不进 DOM 的路径）
+  const htmlBytes = new TextEncoder().encode(
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>大文件直通</body></html>");
+  const dataExe = await exeOf({ ...base, source: "html", htmlData: htmlBytes });
+  ok("htmlData 注入 <title>", dataExe.includes(Buffer.from("<title>测试应用</title>")));
+  ok("htmlData 内容保留", dataExe.includes(Buffer.from("大文件直通")));
+  // 非 UTF-8 文件（GBK“中文”= D6D0 CEC4）严格解码失败 → 保持原字节
+  const gbkBytes = new Uint8Array(
+    [0x3c, 0x68, 0x74, 0x6d, 0x6c, 0x3e, 0x3c, 0x70, 0x3e, 0xd6, 0xd0, 0xce, 0xc4, 0x3c, 0x2f, 0x70, 0x3e]);
+  const gbkExe = await exeOf({ ...base, source: "html", htmlData: gbkBytes });
+  ok("非 UTF-8 字节原样保留", gbkExe.includes(Buffer.from([0xd6, 0xd0, 0xce, 0xc4])));
+
   const zipExe = await exeOf({ ...base, source: "zip", zipData: new Uint8Array(userZip) });
   ok("zip 模式生成 EXE", zipExe.includes(Buffer.from("from zip")));
 
@@ -120,13 +132,17 @@ async function main() {
 
   // ---------- 5. PE 图标资源补丁 ----------
   console.log("[5] PE 图标资源");
-  // 合成 32bpp DIB 图标（与 core.js 编码格式一致）
+  // 合成 32bpp DIB 图标（与 core.js 编码格式一致），XOR 区填充纯绿色 #0e9f6e
+  // （BGRA = 6e 9f 0e ff），供 Windows 端提取像素校验
   const makeDib = (w) => {
     const maskRow = ((w + 31) >> 5) << 2;
     const buf = new Uint8Array(40 + w * w * 4 + maskRow * w);
     const bv = new DataView(buf.buffer);
     bv.setUint32(0, 40, true); bv.setInt32(4, w, true); bv.setInt32(8, w * 2, true);
     bv.setUint16(12, 1, true); bv.setUint16(14, 32, true);
+    for (let i = 40; i < 40 + w * w * 4; i += 4) {
+      buf[i] = 0x6e; buf[i + 1] = 0x9f; buf[i + 2] = 0x0e; buf[i + 3] = 0xff;
+    }
     return buf;
   };
   const iconSet = [16, 32, 64].map((w) => ({ w, h: w, data: makeDib(w) }));
@@ -155,6 +171,70 @@ async function main() {
     }
   }
   ok("找到 .rsrc 节", found);
+
+  // 严格解析资源树（资源管理器的解析方式：按目录头计数遍历）
+  const parseRsrc = () => {
+    const peOff2 = pdv.getUint32(0x3c, true);
+    const coff2 = peOff2 + 4;
+    const n2 = pdv.getUint16(coff2 + 2, true);
+    const os2 = pdv.getUint16(coff2 + 16, true);
+    const opt2 = coff2 + 20;
+    let raw = 0;
+    for (let i = 0; i < n2; i++) {
+      const s = opt2 + os2 + i * 40;
+      if (Buffer.from(patched.buffer, patched.byteOffset + s, 8).toString().replace(/\0.*$/, "") === ".rsrc") {
+        raw = pdv.getUint32(s + 20, true); // PointerToRawData
+      }
+    }
+    // 读一个目录层：计数必须与实际条目一致（之前的 bug 就在这里）
+    const readDir = (off) => {
+      const named = pdv.getUint16(raw + off + 12, true);
+      const ids = pdv.getUint16(raw + off + 14, true);
+      const entries = [];
+      for (let i = 0; i < named + ids; i++) {
+        const nm = pdv.getUint32(raw + off + 16 + i * 8, true);
+        const o = pdv.getUint32(raw + off + 16 + i * 8 + 4, true);
+        entries.push({ nm, sub: !!(o & 0x80000000), off: o & 0x7fffffff });
+      }
+      return { named, ids, entries };
+    };
+    const walk = (off) => readDir(off).entries.map((e) => (e.sub ? walk(e.off) : e));
+    return { raw, type: readDir(0), walk: walk(0) };
+  };
+  const tree = parseRsrc();
+  ok("目录头 ID 计数正确", tree.type.named === 0 && tree.type.ids === 2,
+    `named=${tree.type.named} ids=${tree.type.ids}`);
+  const typeIds = tree.type.entries.map((e) => e.nm).sort((a, b) => a - b);
+  ok("type 层含 RT_ICON(3) 与 RT_GROUP_ICON(14)", typeIds.join(",") === "3,14", typeIds.join(","));
+  // icon ID 层每层恰好 1 条（严格解析器按计数读取，0 条即视为空目录）
+  // icon ID 层每层恰好 1 个语言子目录，语言层恰好 1 个叶数据项
+  // （严格解析器按目录头计数读取，计数为 0 即视为空目录——之前的 bug 就在这里）
+  const iconDirs = tree.walk[0]; // 3 个语言子目录，每个是 [叶数据项] 数组
+  let allDirsValid = iconDirs.length === 3;
+  for (const d of iconDirs) {
+    if (!Array.isArray(d) || d.length !== 1 || !d[0] || d[0].sub) allDirsValid = false;
+  }
+  ok("icon ID 层/语言层条目计数完整", allDirsValid);
+  const groupBranch = tree.walk[1]; // [[叶数据项]]（单条目目录会多一层嵌套）
+  const groupLeaf = Array.isArray(groupBranch[0]) ? groupBranch[0][0] : groupBranch[0];
+  ok("group 分支 1 个 RT_GROUP_ICON 数据项",
+    groupLeaf && typeof groupLeaf === "object" && !groupLeaf.sub);
+  // 数据项大小校验：图标数据项 == DIB/PNG 长度，group 数据项 == 6+14n
+  const readDataEntry = (off) => ({
+    size: pdv.getUint32(patched.byteOffset + tree.raw + off + 4, true),
+  });
+  let iconSizes = [], groupSize = -1;
+  for (const d of iconDirs) {
+    const leaf = d[0];
+    if (leaf && !leaf.sub) iconSizes.push(readDataEntry(leaf.off).size);
+  }
+  if (groupLeaf && !groupLeaf.sub) {
+    groupSize = readDataEntry(groupLeaf.off).size;
+  }
+  ok("图标数据项大小与源数据一致",
+    iconSizes.length === 3 && iconSizes.every((sz, i) => sz === iconSet[i].data.length),
+    JSON.stringify(iconSizes));
+  ok("group 数据项大小正确", groupSize === 6 + 14 * iconSet.length, `${groupSize}`);
 
   // 带图标 EXE 真实运行（PE 结构必须完整可加载）
   const exeFiles = [

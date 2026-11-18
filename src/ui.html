@@ -87,6 +87,20 @@ header .sub { font-size: 13px; color: var(--text-2); }
 }
 .check-item input { width: 15px; height: 15px; accent-color: var(--primary); }
 
+/* 文件徽章（HTML 导入） */
+.html-chip {
+  display: none; align-items: center; gap: 8px;
+  border: 1px solid #bfe3d3; background: #f0faf5; color: var(--primary-dark);
+  border-radius: 8px; padding: 9px 12px; font-size: 13.5px; margin-bottom: 14px;
+}
+.html-chip.show { display: flex; }
+.html-chip b { color: var(--text); word-break: break-all; }
+.html-chip .rm {
+  margin-left: auto; cursor: pointer; color: var(--text-2);
+  border: none; background: none; font-size: 16px; padding: 0 4px; line-height: 1;
+}
+.html-chip .rm:hover { color: var(--danger); }
+
 /* 按钮 */
 .btn {
   width: 100%; padding: 13px; border: none; border-radius: 10px;
@@ -142,10 +156,19 @@ footer { text-align: center; font-size: 12px; color: #b0b6c3; margin-top: 26px; 
     </div>
 
     <div class="pane" id="pane-html">
-      <div class="field">
-        <label>HTML 源码 <small>可粘贴，或拖入 .html / .htm 文件自动读取</small></label>
+      <div class="drop" id="drop-html" style="padding:14px">
+        <div>📄 选择 .html 文件或拖拽至此</div>
+        <div><small>文件内容本地直接打包，大文件也不卡顿</small></div>
+      </div>
+      <div class="html-chip" id="html-chip">
+        <b id="html-chip-name"></b><span id="html-chip-size"></span>
+        <button class="rm" id="html-chip-rm" title="移除文件">×</button>
+      </div>
+      <div class="field" style="margin-top:14px">
+        <label>HTML 源码 <small>也可直接粘贴；已导入文件时优先使用文件内容（点 × 恢复为粘贴内容）</small></label>
         <textarea id="inp-html" placeholder="&lt;!DOCTYPE html&gt; …" spellcheck="false"></textarea>
       </div>
+      <input type="file" id="inp-html-file" accept=".html,.htm" style="display:none">
     </div>
 
     <div class="pane" id="pane-zip">
@@ -232,7 +255,7 @@ footer { text-align: center; font-size: 12px; color: #b0b6c3; margin-top: 26px; 
 <script>
 // ---------------------------------------------------------------- UI 逻辑
 
-const state = { zipData: null, zipName: "", iconData: null, iconUrl: null, lastBlob: null, lastName: "" };
+const state = { zipData: null, zipName: "", htmlFile: null, iconData: null, iconUrl: null, lastBlob: null, lastName: "" };
 const $ = (id) => document.getElementById(id);
 
 function showMsg(type, text) {
@@ -255,21 +278,47 @@ document.querySelectorAll(".tab").forEach((tab) => {
 });
 const curPane = () => document.querySelector(".tab.active").dataset.pane;
 
-// HTML 源码：拖入 .html/.htm 自动读取
+// HTML 源码：文件导入（内容存内存直通打包，不写入 DOM，避免大文件卡顿）+ 手动粘贴
 const htmlInput = $("inp-html");
+const dropHtml = $("drop-html"), inpHtmlFile = $("inp-html-file");
+dropHtml.addEventListener("click", () => inpHtmlFile.click());
+["dragover", "dragleave", "drop"].forEach((ev) =>
+  dropHtml.addEventListener(ev, (e) => {
+    e.preventDefault();
+    dropHtml.classList.toggle("over", ev === "dragover");
+    if (ev !== "drop") return;
+    const f = e.dataTransfer.files[0];
+    if (f) loadHtmlFile(f);
+  })
+);
+inpHtmlFile.addEventListener("change", () => { if (inpHtmlFile.files[0]) loadHtmlFile(inpHtmlFile.files[0]); });
+// 兼容旧习惯：直接拖文件到文本框同样走文件导入
 ["dragover", "dragleave", "drop"].forEach((ev) =>
   htmlInput.addEventListener(ev, (e) => {
     e.preventDefault();
-    htmlInput.classList.toggle("over", ev === "dragover");
     if (ev !== "drop") return;
     const f = e.dataTransfer.files[0];
-    if (f && /\.(html?|htm)$/i.test(f.name)) {
-      f.text().then((t) => { htmlInput.value = t; showMsg("info", "已读取 " + f.name); });
-    } else {
-      showMsg("error", "请拖入 .html 或 .htm 文件");
-    }
+    if (f) loadHtmlFile(f);
   })
 );
+async function loadHtmlFile(f) {
+  if (!/\.(html?|htm)$/i.test(f.name)) { showMsg("error", "请选择 .html 或 .htm 文件"); return; }
+  // arrayBuffer 读取完成后交还主线程一帧，避免读取与渲染挤在一起
+  const buf = await f.arrayBuffer();
+  await new Promise((r) => requestAnimationFrame(r));
+  state.htmlFile = { name: f.name, data: new Uint8Array(buf) };
+  $("html-chip-name").textContent = f.name;
+  $("html-chip-size").textContent = " " + (f.size / 1024).toFixed(1) + " KB";
+  $("html-chip").classList.add("show");
+  dropHtml.classList.add("has-file");
+  showMsg("info", "已导入 " + f.name + "，打包时优先使用该文件内容");
+}
+$("html-chip-rm").addEventListener("click", () => {
+  state.htmlFile = null;
+  $("html-chip").classList.remove("show");
+  dropHtml.classList.remove("has-file");
+  inpHtmlFile.value = "";
+});
 
 // ZIP：拖拽 + 点击选择
 const dropZip = $("drop-zip"), inpZip = $("inp-zip");
@@ -340,6 +389,7 @@ async function generate() {
     source,
     url: $("inp-url").value,
     html: $("inp-html").value,
+    htmlData: state.htmlFile ? state.htmlFile.data : null,
     zipData: state.zipData,
     title: $("inp-title").value.trim(),
     port: num("inp-port"),

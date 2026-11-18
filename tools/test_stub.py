@@ -114,18 +114,16 @@ def main():
         proc2.kill()
 
     # ---------- PE 图标资源验证（Node 测试产出 work/test-icon.exe） ----------
+    # 用资源管理器同款 API SHDefExtractIcon 提取并校验像素颜色（node-test.js
+    # 合成的图标是纯绿 #0e9f6e）。ExtractAssociatedIcon 失败时返回通用图标，
+    # 只判断"取到了图标"会是假阳性，必须校验像素。
     icon_exe = os.path.join(ROOT, "work", "test-icon.exe")
     if os.path.exists(icon_exe):
-        code = ("Add-Type -AssemblyName System.Drawing; "
-                "$i=[System.Drawing.Icon]::ExtractAssociatedIcon('" + icon_exe + "'); "
-                "if($i){ \"ICON_OK $($i.Width)x$($i.Height)\" } else { 'ICON_FAIL' }")
-        res = subprocess.run(["powershell", "-NoProfile", "-Command", code],
+        res = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "verify_icon.py"), icon_exe],
                              capture_output=True, text=True, timeout=60)
-        out = res.stdout.strip()
-        print("图标提取:", out)
-        if "ICON_OK" not in out:
-            sys.exit("FAIL: ExtractAssociatedIcon 无法读取图标资源\n" + res.stderr)
-        print("PASS: EXE 图标资源可被 Windows 正常读取")
+        print(res.stdout.strip())
+        if "PASS" not in res.stdout:
+            sys.exit("FAIL: 图标提取验证未通过\n" + res.stdout + res.stderr)
 
 
 if __name__ == "__main__":

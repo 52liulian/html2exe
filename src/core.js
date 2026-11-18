@@ -328,6 +328,9 @@ function h2xPatchExeIcon(exe, icons) {
 
   // ---- 构建资源节内容 ----
   // 目录布局：type 层(icon+group) → ID 层 → 语言层(叶) → 数据项 → 数据块
+  // 注意：NumberOfIdEntries 位于目录头 +14（+12 是 NumberOfNamedEntries，保持 0）。
+  // 之前误写到 +12 且恒为 0，宽松的提取 API 能容错，但资源管理器严格解析时
+  // 视为空目录，桌面图标会退化为默认图标。
   const n = icons.length;
   const offIconDir = 32;                          // type 层 16+2*8
   const offGroupDir = offIconDir + 16 + 8 * n;    // ID 层 16+n*8
@@ -345,33 +348,34 @@ function h2xPatchExeIcon(exe, icons) {
 
   const section = new Uint8Array(cur);
   const sv = new DataView(section.buffer);
-  const writeDir = (base, numId, entries) => {
-    sv.setUint16(base + 12, numId, true);
+  const writeDir = (base, entries) => {
+    sv.setUint16(base + 14, entries.length, true);   // NumberOfIdEntries
     entries.forEach(([id, offset], i) => {
       sv.setUint32(base + 16 + i * 8, id, true);
       sv.setUint32(base + 16 + i * 8 + 4, offset, true);
     });
   };
   // type 层：RT_ICON(3) 与 RT_GROUP_ICON(14)
-  writeDir(0, 0, [[3, 0x80000000 | offIconDir], [14, 0x80000000 | offGroupDir]]);
-  // icon ID 层：ID 1..n → 语言层
-  for (let i = 0; i < n; i++) {
-    writeDir(offIconDir, 0, [[i + 1, 0x80000000 | (offIconLeaves + 24 * i)]]);
-  }
+  writeDir(0, [[3, 0x80000000 | offIconDir], [14, 0x80000000 | offGroupDir]]);
+  // icon ID 层：ID 1..n 各指向自己的语言层（一次性写入全部条目，
+  // 不能逐条调用 writeDir，否则目录会被反复重写只剩最后一条）
+  writeDir(offIconDir, Array.from({ length: n }, (_, i) =>
+    [i + 1, 0x80000000 | (offIconLeaves + 24 * i)]));
   // group ID 层：ID 1 → 语言层
-  writeDir(offGroupDir, 0, [[1, 0x80000000 | offGroupLeaf]]);
+  writeDir(offGroupDir, [[1, 0x80000000 | offGroupLeaf]]);
   // 语言层（数据项入口统一用 0x409 en-US）
   for (let i = 0; i < n; i++) {
-    writeDir(offIconLeaves + 24 * i, 0, [[0x409, dataEntryStart + i * 16]]);
+    writeDir(offIconLeaves + 24 * i, [[0x409, dataEntryStart + i * 16]]);
   }
-  writeDir(offGroupLeaf, 0, [[0x409, dataEntryStart + n * 16]]);
-  // 数据项
+  writeDir(offGroupLeaf, [[0x409, dataEntryStart + n * 16]]);
+  // 数据项（OffsetToData 为映像级绝对 RVA = 节 VA + 节内偏移；
+  // 目录条目偏移是节内相对，数据项偏移是绝对 RVA，两者不同，参考系统 PE）
   for (let i = 0; i < n; i++) {
     const e = dataEntryStart + i * 16;
-    sv.setUint32(e, blobOffsets[i], true);      // OffsetToData（相对节起始）
+    sv.setUint32(e, newRVA + blobOffsets[i], true);
     sv.setUint32(e + 4, icons[i].data.length, true);
   }
-  sv.setUint32(dataEntryStart + n * 16, groupOffset, true);
+  sv.setUint32(dataEntryStart + n * 16, newRVA + groupOffset, true);
   sv.setUint32(dataEntryStart + n * 16 + 4, 6 + 14 * n, true);
   // 数据块
   for (let i = 0; i < n; i++) section.set(icons[i].data, blobOffsets[i]);
@@ -423,8 +427,8 @@ function h2xInjectFavicon(html) {
 // ---------------------------------------------------------------- 对外接口
 
 // build(opts) -> Promise<{ blob: Blob, name: string, size: number }>
-// opts: { source: 'url'|'html'|'zip', url, html, zipData: Uint8Array,
-//         title, port, debug, width, height }
+// opts: { source: 'url'|'html'|'zip', url, html, htmlData: Uint8Array, zipData: Uint8Array,
+//         title, port, debug, width, height, hint, icon: Uint8Array }
 async function h2xBuild(opts) {
   const title = (opts.title || "").trim();
   if (!title) throw new Error("请填写软件名称");
@@ -452,11 +456,25 @@ async function h2xBuild(opts) {
     if (!/^https?:\/\//i.test(url)) throw new Error("网址格式不正确（仅支持 http/https）");
     files.push({ name: "index.html", data: h2xStrToU8(h2xRedirectPage(url, title, faviconTag)) });
   } else if (opts.source === "html") {
-    const html = (opts.html || "").trim();
-    if (!html) throw new Error("请粘贴 HTML 源码");
-    let out = h2xEnsureTitle(html, title);
-    if (iconPng) out = h2xInjectFavicon(out);
-    files.push({ name: "index.html", data: h2xStrToU8(out) });
+    // 优先使用导入文件的原始字节（不经过 DOM，支持大文件且不破坏编码），
+    // 仅当内容为 UTF-8 且需要注入 title/favicon 时才重新编码
+    let data = null;
+    if (opts.htmlData && opts.htmlData.length) {
+      data = opts.htmlData;
+      try {
+        const txt = new TextDecoder("utf-8", { fatal: true }).decode(data);
+        let out = h2xEnsureTitle(txt, title);
+        if (iconPng) out = h2xInjectFavicon(out);
+        if (out !== txt) data = h2xStrToU8(out);
+      } catch { /* 非 UTF-8（如 GBK），保持原字节并跳过注入 */ }
+    } else {
+      const html = (opts.html || "").trim();
+      if (!html) throw new Error("请粘贴 HTML 源码或导入 HTML 文件");
+      let out = h2xEnsureTitle(html, title);
+      if (iconPng) out = h2xInjectFavicon(out);
+      data = h2xStrToU8(out);
+    }
+    files.push({ name: "index.html", data });
   } else if (opts.source === "zip") {
     if (!opts.zipData || !opts.zipData.length) throw new Error("请选择 ZIP 压缩包");
     const entries = await h2xUnzip(opts.zipData);
