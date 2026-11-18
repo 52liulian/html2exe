@@ -1,0 +1,7 @@
+# 构建中间产物
+work/
+__pycache__/
+*.log
+
+# 项目数据
+.workbuddy/

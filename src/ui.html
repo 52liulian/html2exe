@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Html2Exe · 网页打包小工具</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --primary: #0e9f6e;        /* 主色，与 html2apk 同一套绿 */
+  --primary-dark: #0b8459;
+  --primary-light: #e9f7f1;
+  --danger: #e5484d;
+  --success: #2f9e68;
+  --text: #1f2430;
+  --text-2: #6b7280;
+  --border: #e2e5ec;
+  --bg: #f5f6fa;
+  --card: #ffffff;
+  --radius: 12px;
+}
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Segoe UI", sans-serif;
+  background: var(--bg); color: var(--text);
+  min-height: 100vh; padding: 24px 16px 60px;
+}
+.wrap { max-width: 760px; margin: 0 auto; }
+header { text-align: center; margin-bottom: 22px; }
+header h1 { font-size: 22px; margin-bottom: 6px; }
+header .sub { font-size: 13px; color: var(--text-2); }
+
+/* 提示条 */
+.msg { display: none; padding: 11px 14px; border-radius: 10px; font-size: 13.5px; margin-bottom: 16px; border: 1px solid; }
+.msg.show { display: block; }
+.msg.error { background: #fdf0f0; color: var(--danger); border-color: #f5c6c8; }
+.msg.success { background: #effaf3; color: var(--success); border-color: #bfe8cf; }
+.msg.info { background: var(--primary-light); color: var(--primary-dark); border-color: #bfe3d3; }
+
+/* 卡片 */
+.card {
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 20px 22px; margin-bottom: 18px;
+}
+.card h2 { font-size: 15.5px; margin-bottom: 14px; display: flex; align-items: baseline; gap: 8px; }
+.card h2 .sub { font-size: 12px; font-weight: normal; color: var(--text-2); }
+
+/* 标签页 */
+.tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+.tab {
+  flex: 1; padding: 10px 0; text-align: center; font-size: 14px;
+  border: 1px solid var(--border); border-radius: 8px; cursor: pointer;
+  background: var(--card); color: var(--text); user-select: none;
+}
+.tab.active { background: var(--primary); border-color: var(--primary); color: #fff; font-weight: bold; }
+.pane { display: none; }
+.pane.active { display: block; }
+
+/* 表单 */
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 13.5px; font-weight: bold; margin-bottom: 6px; }
+.field label small { font-weight: normal; color: var(--text-2); font-size: 12px; }
+.field input[type="text"], .field input[type="number"], .field textarea, .field select {
+  width: 100%; border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; font-size: 14px; color: var(--text); background: #fff; outline: none;
+}
+.field input:focus, .field textarea:focus, .field select:focus { border-color: var(--primary); }
+.field textarea {
+  min-height: 160px; resize: vertical;
+  font-family: Consolas, Menlo, monospace; font-size: 13px; line-height: 1.5;
+}
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* 拖拽区 */
+.drop {
+  border: 2px dashed var(--border); border-radius: 10px; padding: 26px 16px;
+  text-align: center; font-size: 13.5px; color: var(--text-2); cursor: pointer;
+}
+.drop:hover, .drop.over { border-color: var(--primary); background: var(--primary-light); }
+.drop.has-file { border-style: solid; border-color: var(--primary); background: #f0faf5; color: var(--primary-dark); }
+.drop b { color: var(--text); }
+
+/* 勾选项 */
+.check-item {
+  display: flex; align-items: center; gap: 8px;
+  border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px;
+  font-size: 13.5px; cursor: pointer; user-select: none;
+}
+.check-item input { width: 15px; height: 15px; accent-color: var(--primary); }
+
+/* 按钮 */
+.btn {
+  width: 100%; padding: 13px; border: none; border-radius: 10px;
+  background: var(--primary); color: #fff; font-size: 16px; font-weight: bold;
+  letter-spacing: 2px; cursor: pointer;
+}
+.btn:hover { background: var(--primary-dark); }
+.btn:disabled { background: #a3d9c0; cursor: not-allowed; }
+.spin {
+  display: inline-block; width: 14px; height: 14px; margin-right: 8px;
+  border: 2px solid rgba(255,255,255,.4); border-top-color: #fff; border-radius: 50%;
+  animation: spin .7s linear infinite; vertical-align: -2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 图标预览 */
+.icon-preview { width: 72px; height: 72px; border-radius: 14px; border: 1px solid var(--border); background: #fff; }
+
+/* 结果卡 */
+.result { display: none; text-align: center; }
+.result.show { display: block; }
+.result .ok { font-size: 34px; margin-bottom: 8px; }
+.result .file { font-size: 14.5px; font-weight: bold; margin-bottom: 4px; word-break: break-all; }
+.result .meta { font-size: 12.5px; color: var(--text-2); margin-bottom: 16px; }
+.result .btn { width: auto; padding: 11px 34px; }
+
+footer { text-align: center; font-size: 12px; color: #b0b6c3; margin-top: 26px; line-height: 1.8; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Html2Exe · 网页打包小工具</h1>
+    <div class="sub">把 网址 / HTML 源码 / ZIP 压缩包 打包成一个 Windows EXE</div>
+  </header>
+
+  <div id="msg" class="msg"></div>
+
+  <!-- 内容来源 -->
+  <div class="card">
+    <h2>WebView 内容</h2>
+    <div class="tabs">
+      <div class="tab active" data-pane="url">网址</div>
+      <div class="tab" data-pane="html">HTML源码</div>
+      <div class="tab" data-pane="zip">压缩包</div>
+    </div>
+
+    <div class="pane active" id="pane-url">
+      <div class="field">
+        <label>网址 <small>应用启动后打开该网址，未带协议自动补全 https://</small></label>
+        <input type="text" id="inp-url" placeholder="https://example.com" spellcheck="false">
+      </div>
+    </div>
+
+    <div class="pane" id="pane-html">
+      <div class="field">
+        <label>HTML 源码 <small>可粘贴，或拖入 .html / .htm 文件自动读取</small></label>
+        <textarea id="inp-html" placeholder="&lt;!DOCTYPE html&gt; …" spellcheck="false"></textarea>
+      </div>
+    </div>
+
+    <div class="pane" id="pane-zip">
+      <div class="drop" id="drop-zip">
+        <div>📦</div>
+        <div>选择ZIP(不要包含外层文件夹)文件或拖拽至此</div>
+        <div><small>根目录需包含 index.html，可离线运行</small></div>
+      </div>
+      <input type="file" id="inp-zip" accept=".zip" style="display:none">
+    </div>
+  </div>
+
+  <!-- EXE 信息 -->
+  <div class="card">
+    <h2>EXE信息 <span class="sub">窗口标题栏显示软件名称</span></h2>
+    <div class="grid2">
+      <div class="field">
+        <label>软件名称 (title)</label>
+        <input type="text" id="inp-title" placeholder="我的应用" maxlength="60">
+      </div>
+      <div class="field">
+        <label>端口号 (port) <small>留空自动分配</small></label>
+        <input type="number" id="inp-port" placeholder="8080" min="1" max="65535">
+      </div>
+      <div class="field">
+        <label>窗口宽度 (width) <small>像素，留空自适应</small></label>
+        <input type="number" id="inp-width" placeholder="1280" min="200" max="8192">
+      </div>
+      <div class="field">
+        <label>窗口高度 (height) <small>像素，留空自适应</small></label>
+        <input type="number" id="inp-height" placeholder="800" min="200" max="8192">
+      </div>
+    </div>
+    <div style="display:flex; gap:14px; align-items:flex-end; flex-wrap:wrap">
+      <label class="check-item" style="display:inline-flex">
+        <input type="checkbox" id="inp-debug"> 调试模式 (debug)
+        <small style="color:var(--text-2)">启动时弹出控制台输出日志</small>
+      </label>
+      <div class="field" style="margin:0; flex:1; min-width:200px">
+        <label>窗口提示 (hint) <small>按软件名称匹配窗口标题</small></label>
+        <select id="inp-hint">
+          <option value="0">无</option>
+          <option value="1">最小化</option>
+          <option value="2">最大化</option>
+          <option value="3">固定大小</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- 应用图标 -->
+  <div class="card">
+    <h2>应用图标 <span class="sub">正方形 PNG，96~1024px，推荐 256/512；留空使用默认图标</span></h2>
+    <div style="display:flex; gap:16px; align-items:center">
+      <img class="icon-preview" id="icon-preview" alt="图标预览">
+      <div class="drop" id="drop-icon" style="flex:1; padding:16px">
+        <div>🖼️</div>
+        <div>选择 PNG 图标文件或拖拽至此</div>
+        <div><small>同时用作窗口左上角图标与 EXE 文件图标</small></div>
+      </div>
+      <input type="file" id="inp-icon" accept=".png" style="display:none">
+    </div>
+  </div>
+
+  <button class="btn" id="btn-gen">生成EXE (windows)</button>
+
+  <!-- 结果 -->
+  <div class="card result" id="card-result">
+    <div class="ok">✅</div>
+    <div class="file" id="res-name"></div>
+    <div class="meta" id="res-meta"></div>
+    <button class="btn" id="btn-save">保存到本地</button>
+  </div>
+
+  <footer>
+    打包全程在浏览器本地完成，数据不上传服务器 · EXE 运行时启动本地服务并用 Edge App 窗口打开<br>
+    双击 HTML 即可使用，需要 Chrome / Edge 103+ · 生成结果免安装、免依赖，双击直接运行
+  </footer>
+</div>
+
+<script>
+/*__CORE__*/
+</script>
+<script>
+// ---------------------------------------------------------------- UI 逻辑
+
+const state = { zipData: null, zipName: "", iconData: null, iconUrl: null, lastBlob: null, lastName: "" };
+const $ = (id) => document.getElementById(id);
+
+function showMsg(type, text) {
+  const el = $("msg");
+  el.className = "msg show " + type;
+  el.textContent = text;
+  if (type !== "error") setTimeout(() => el.classList.remove("show"), 4000);
+}
+function clearMsg() { $("msg").className = "msg"; }
+
+// 标签页切换
+document.querySelectorAll(".tab").forEach((tab) => {
+  tab.addEventListener("click", () => {
+    document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+    document.querySelectorAll(".pane").forEach((p) => p.classList.remove("active"));
+    tab.classList.add("active");
+    $("pane-" + tab.dataset.pane).classList.add("active");
+    clearMsg();
+  });
+});
+const curPane = () => document.querySelector(".tab.active").dataset.pane;
+
+// HTML 源码：拖入 .html/.htm 自动读取
+const htmlInput = $("inp-html");
+["dragover", "dragleave", "drop"].forEach((ev) =>
+  htmlInput.addEventListener(ev, (e) => {
+    e.preventDefault();
+    htmlInput.classList.toggle("over", ev === "dragover");
+    if (ev !== "drop") return;
+    const f = e.dataTransfer.files[0];
+    if (f && /\.(html?|htm)$/i.test(f.name)) {
+      f.text().then((t) => { htmlInput.value = t; showMsg("info", "已读取 " + f.name); });
+    } else {
+      showMsg("error", "请拖入 .html 或 .htm 文件");
+    }
+  })
+);
+
+// ZIP：拖拽 + 点击选择
+const dropZip = $("drop-zip"), inpZip = $("inp-zip");
+dropZip.addEventListener("click", () => inpZip.click());
+["dragover", "dragleave", "drop"].forEach((ev) =>
+  dropZip.addEventListener(ev, (e) => {
+    e.preventDefault();
+    dropZip.classList.toggle("over", ev === "dragover");
+    if (ev !== "drop") return;
+    const f = e.dataTransfer.files[0];
+    if (f) loadZip(f);
+  })
+);
+inpZip.addEventListener("change", () => { if (inpZip.files[0]) loadZip(inpZip.files[0]); });
+async function loadZip(f) {
+  if (!/\.zip$/i.test(f.name)) { showMsg("error", "请选择 .zip 压缩包"); return; }
+  state.zipData = new Uint8Array(await f.arrayBuffer());
+  state.zipName = f.name;
+  dropZip.classList.add("has-file");
+  dropZip.innerHTML = "<div><b>" + f.name + "</b></div><div>" + (f.size / 1024).toFixed(1) + " KB</div>";
+}
+
+// 图标：拖拽 + 点击选择，实时预览
+const dropIcon = $("drop-icon"), inpIcon = $("inp-icon"), iconPreview = $("icon-preview");
+dropIcon.addEventListener("click", () => inpIcon.click());
+["dragover", "dragleave", "drop"].forEach((ev) =>
+  dropIcon.addEventListener(ev, (e) => {
+    e.preventDefault();
+    dropIcon.classList.toggle("over", ev === "dragover");
+    if (ev !== "drop") return;
+    const f = e.dataTransfer.files[0];
+    if (f) loadIcon(f);
+  })
+);
+inpIcon.addEventListener("change", () => { if (inpIcon.files[0]) loadIcon(inpIcon.files[0]); });
+async function loadIcon(f) {
+  if (!/\.png$/i.test(f.name)) { showMsg("error", "请选择 .png 图标文件"); return; }
+  const data = new Uint8Array(await f.arrayBuffer());
+  try {
+    const bmp = await createImageBitmap(new Blob([data], { type: "image/png" }));
+    if (bmp.width !== bmp.height) { showMsg("error", `图标需为正方形（当前 ${bmp.width}×${bmp.height}）`); bmp.close(); return; }
+    if (bmp.width < 96 || bmp.width > 1024) { showMsg("error", "图标尺寸需在 96~1024px 之间"); bmp.close(); return; }
+    bmp.close();
+  } catch { showMsg("error", "无法解析 PNG 文件"); return; }
+  state.iconData = data;
+  if (state.iconUrl) URL.revokeObjectURL(state.iconUrl);
+  state.iconUrl = URL.createObjectURL(new Blob([data], { type: "image/png" }));
+  iconPreview.src = state.iconUrl;
+  dropIcon.classList.add("has-file");
+}
+// 初始显示默认图标预览
+(async () => {
+  try {
+    const png = await Html2Exe.defaultIconPng();
+    if (!state.iconUrl) iconPreview.src = URL.createObjectURL(new Blob([png], { type: "image/png" }));
+  } catch { /* 无 canvas 环境，忽略 */ }
+})();
+
+// 生成
+async function generate() {
+  clearMsg();
+  const source = curPane();
+  const num = (id) => {
+    const v = parseInt($(id).value, 10);
+    return isNaN(v) ? 0 : v;
+  };
+  const opts = {
+    source,
+    url: $("inp-url").value,
+    html: $("inp-html").value,
+    zipData: state.zipData,
+    title: $("inp-title").value.trim(),
+    port: num("inp-port"),
+    width: num("inp-width"),
+    height: num("inp-height"),
+    hint: num("inp-hint"),
+    debug: $("inp-debug").checked,
+    icon: state.iconData,
+  };
+  if (!opts.title) { showMsg("error", "请填写软件名称"); $("inp-title").focus(); return; }
+  if (source === "zip" && !state.zipData) { showMsg("error", "请选择 ZIP 压缩包"); return; }
+
+  const btn = $("btn-gen");
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>打包中…';
+  try {
+    const r = await Html2Exe.build(opts);
+    state.lastBlob = r.blob;
+    state.lastName = r.name;
+    $("res-name").textContent = r.name;
+    $("res-meta").textContent = (r.size / 1024 / 1024).toFixed(2) + " MB · " + opts.title + " · 双击即可运行";
+    $("card-result").classList.add("show");
+    showMsg("success", "打包完成，点击「保存到本地」下载");
+    $("card-result").scrollIntoView({ behavior: "smooth", block: "center" });
+  } catch (e) {
+    showMsg("error", e.message || String(e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "生成EXE (windows)";
+  }
+}
+$("btn-gen").addEventListener("click", generate);
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === "Enter") generate();
+});
+
+// 保存到本地
+$("btn-save").addEventListener("click", async () => {
+  if (!state.lastBlob) return;
+  // 优先用 File System Access API 直接写盘：不经过下载管道，文件不带
+  // Mark-of-the-Web，可避开 SmartScreen 对下载 exe 的拦截与运行时告警
+  if (window.showSaveFilePicker) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: state.lastName,
+        types: [{ description: "Windows 程序", accept: { "application/x-msdownload": [".exe"] } }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(state.lastBlob);
+      await writable.close();
+      showMsg("success", "已保存到本地，双击即可运行");
+      return;
+    } catch (e) {
+      if (e && e.name === "AbortError") return; // 用户取消保存
+      // 其他异常回退到普通下载
+    }
+  }
+  // 回退：普通下载（可能触发 SmartScreen 提示，属正常现象）
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(state.lastBlob);
+  a.download = state.lastName;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 30000);
+  showMsg("info", "如保存或运行时出现 SmartScreen 提示，点击「更多信息 → 仍要运行」即可");
+});
+</script>
+</body>
+</html>
